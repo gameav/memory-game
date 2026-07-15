@@ -38,6 +38,7 @@
         function getCardPoints(card) {
             if (!card) return 0;
             if (card.value === 'Joker') return -1;
+            if (card.value === '7') return 0; // <-- Added 7 equals 0 rule!
             if (card.value === 'K') return 13;
             if (card.value === 'Q') return 12;
             if (card.value === 'J') return 11;
@@ -748,7 +749,7 @@
                                 <span className="text-red-300">Opponent: {scores.p2}</span>
                             </div>
                         ) : (
-                            <div className="text-xs text-emerald-400">Joker (-1) | J (11) | Q (12) | K (13)</div>
+                            <div className="text-xs text-emerald-400">Joker (-1) | 7 (0) | J (11) | Q (12) | K (13)</div>
                         )}
                     </div>
                 </div>
