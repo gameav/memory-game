@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cambio Card Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-emerald-900 min-h-screen text-white p-4 transition-colors duration-500">
+    <div id="root" class="w-full max-w-4xl mx-auto"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const CARD_VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'Joker'];
+        const SUITS = ['♠', '♥', '♦', '♣'];
+
+        function createDeck() {
+            let deck = [];
+            for (let suit of SUITS) {
+                for (let val of CARD_VALUES.filter(v => v !== 'Joker')) {
+                    deck.push({ value: val, suit: suit, isRed: suit === '♥' || suit === '♦' });
+                }
+            }
+            deck.push({ value: 'Joker', suit: '★', isRed: false });
+            deck.push({ value: 'Joker', suit: '★', isRed: true });
+            return deck.sort(() => Math.random() - 0.5);
+        }
+
+        function getCardPoints(card) {
+            if (!card) return 0;
+            if (card.value === 'Joker') return -1;
+            if (card.value === 'K') return 13;
+            if (card.value === 'Q') return 12;
+            if (card.value === 'J') return 11;
+            if (card.value === 'A') return 1;
+            return parseInt(card.value);
+        }
+
+        function App() {
+            const [deck, setDeck] = useState([]);
+            const [players, setPlayers] = useState([
+                { name: "You (P1)", cards: [] },
+                { name: "Opponent (P2)", cards: [] }
+            ]);
+            const [currentPlayer, setCurrentPlayer] = useState(0);
+            const [discardPile, setDiscardPile] = useState([]);
+            const [activeCard, setActiveCard] = useState(null);
+            const [gameState, setGameState] = useState('setup'); 
+            const [peeksLeft, setPeeksLeft] = useState(2);
+            const [message, setMessage] = useState("Game Setup: Click 2 of your cards to peek!");
+            const [scores, setScores] = useState(null);
+            const [showCalledBy, setShowCalledBy] = useState(null);
+            const [turnsAfterShow, setTurnsAfterShow] = useState(0);
+            const [swapSelection, setSwapSelection] = useState([]);
+            const [matchWindowActive, setMatchWindowActive] = useState(false);
+            const [matchCountdown, setMatchCountdown] = useState(0);
+
+            const aiTimerRef = useRef(null);
+            const countdownIntervalRef = useRef(null);
+
+            const startNewGame = () => {
+                const newDeck = createDeck();
+                const p1Cards = [newDeck.pop(), newDeck.pop(), newDeck.pop(), newDeck.pop()].map(c => ({...c, visible: false}));
+                const p2Cards = [newDeck.pop(), newDeck.pop(), newDeck.pop(), newDeck.pop()].map(c => ({...c, visible: false}));
+                
+                setDeck(newDeck);
+                setPlayers([
+                    { name: "You (P1)", cards: p1Cards },
+                    { name: "Opponent (P2)", cards: p2Cards }
+                ]);
+                setDiscardPile([newDeck.pop()]);
+                setActiveCard(null);
+                setCurrentPlayer(0);
+                setPeeksLeft(2);
+                setGameState('setup');
+                setMessage("Game Setup: Click 2 of your cards to peek!");
+                setScores(null);
+                setShowCalledBy(null);
+                setTurnsAfterShow(0);
+                setSwapSelection([]);
+                setMatchWindowActive(false);
+                setMatchCountdown(0);
+                clearTimers();
+            };
+
+            useEffect(() => {
+                startNewGame();
+                return () => clearTimers();
+            }, []);
+
+            const clearTimers = () => {
+                if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
+                if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+            };
+
+            const handleSetupPeek = (index) => {
+                if (gameState !== 'setup') return;
+                const updatedCards = [...players[0].cards];
+                if (!updatedCards[index] || updatedCards[index].visible) return;
+
+                updatedCards[index].visible = true;
+                setPlayers([{ ...players[0], cards: updatedCards }, players[1]]);
+                
+                setPeeksLeft(prev => {
+                    const next = prev - 1;
+                    if (next === 0) {
+                        setTimeout(() => {
+                            const hiddenCards = updatedCards.map(c => c ? ({...c, visible: false}) : null);
+                            setPlayers([{ ...players[0], cards: hiddenCards }, players[1]]);
+                            setGameState('playing');
+                            setMessage("Your turn! Draw from the deck or take from the discard pile.");
+                        }, 2000);
+                        return 0;
+                    }
+                    return next;
+                });
+            };
+
+            const drawFromDeck = () => {
+                if (gameState !== 'playing' || activeCard || matchWindowActive) return;
+                const newDeck = [...deck];
+                const card = newDeck.pop();
+                setDeck(newDeck);
+                setActiveCard(card);
+                setMessage(`You drew ${card.value}${card.suit}. Swap it with one of your cards, or discard it to activate its power.`);
+            };
+
+            const drawFromDiscard = () => {
+                if (gameState !== 'playing' || activeCard || discardPile.length === 0 || matchWindowActive) return;
+                const newPile = [...discardPile];
+                const card = newPile.pop();
+                setDiscardPile(newPile);
+                setActiveCard(card);
+                setMessage(`You took ${card.value}${card.suit} from discard. Swap it with one of your cards.`);
+            };
+
+            const swapCard = (index) => {
+                if (!activeCard) return;
+                const p1Cards = [...players[0].cards];
+                const swappedOut = p1Cards[index];
+                
+                p1Cards[index] = { ...activeCard, visible: false };
+                setDiscardPile(prev => [...prev, swappedOut]);
+                setActiveCard(null);
+                setPlayers([{ ...players[0], cards: p1Cards }, players[1]]);
+                
+                triggerMatchWindow(() => {
+                    endTurn();
+                });
+            };
+
+            const discardActive = () => {
+                if (!activeCard) return;
+                const discarded = activeCard;
+                setDiscardPile(prev => [...prev, discarded]);
+                setActiveCard(null);
+
+                if (discarded.value === '8') {
+                    setMessage("Power: Click one of YOUR cards to peek!");
+                    setGameState('peek-power');
+                } else if (discarded.value === '10') {
+                    setMessage("Power: Click one of your OPPONENT'S cards to spy!");
+                    setGameState('spy-power');
+                } else if (discarded.value === 'J') {
+                    setMessage("Power: Jack! Go again! Take another turn immediately.");
+                } else if (discarded.value === 'Q') {
+                    setMessage("Power: Swap any 2 cards. Click the first card.");
+                    setGameState('swap-power-1');
+                    setSwapSelection([]);
+                } else if (discarded.value === 'K') {
+                    setMessage("Power: King! Click an opponent's card to look at it first.");
+                    setGameState('king-look');
+                } else {
+                    triggerMatchWindow(() => {
+                        endTurn();
+                    });
+                }
+            };
+
+            const enterMatchMode = () => {
+                if (discardPile.length === 0) return;
+                setGameState('match-mode');
+                setMessage("MATCH RULE: Click the card on the table that matches the top discard card!");
+            };
+
+            const handleMatchAttempt = (pIdx, cIdx) => {
+                const targetCard = players[pIdx].cards[cIdx];
+                if (!targetCard) return;
+
+                const topDiscard = discardPile[discardPile.length - 1];
+
+                if (targetCard.value === topDiscard.value) {
+                    clearTimers();
+                    setMatchWindowActive(false);
+
+                    setMessage(`CORRECT MATCH! The ${targetCard.value}${targetCard.suit} has been burned!`);
+                    const updatedPlayers = JSON.parse(JSON.stringify(players));
+                    updatedPlayers[pIdx].cards[cIdx] = null;
+                    setDiscardPile(prev => [...prev, targetCard]);
+
+                    if (pIdx === 0) {
+                        setPlayers(updatedPlayers);
+                        setTimeout(() => {
+                            setGameState('playing');
+                            endTurn();
+                        }, 1500);
+                    } else {
+                        const validP1Indices = updatedPlayers[0].cards.map((c, i) => c !== null ? i : null).filter(v => v !== null);
+                        if (validP1Indices.length > 0) {
+                            setMessage("Perfect! Transferring one of your cards to them...");
+                            setTimeout(() => {
+                                const randomP1Index = validP1Indices[Math.floor(Math.random() * validP1Indices.length)];
+                                const givenCard = updatedPlayers[0].cards[randomP1Index];
+                                updatedPlayers[0].cards[randomP1Index] = null;
+                                updatedPlayers[1].cards[cIdx] = givenCard;
+                                setPlayers(updatedPlayers);
+                                setGameState('playing');
+                                endTurn();
+                            }, 1500);
+                        } else {
+                            setPlayers(updatedPlayers);
+                            setTimeout(() => {
+                                setGameState('playing');
+                                endTurn();
+                            }, 1500);
+                        }
+                    }
+                } else {
+                    clearTimers();
+                    setMatchWindowActive(false);
+
+                    setMessage(`WRONG! Penalty: You must draw an extra card!`);
+                    const newDeck = [...deck];
+                    const penaltyCard = newDeck.pop();
+                    const updatedPlayers = JSON.parse(JSON.stringify(players));
+                    updatedPlayers[0].cards.push({ ...penaltyCard, visible: false });
+                    setDeck(newDeck);
+                    setPlayers(updatedPlayers);
+
+                    setTimeout(() => {
+                        setGameState('playing');
+                        endTurn();
+                    }, 2000);
+                }
+            };
+
+            const triggerMatchWindow = (callbackOnComplete) => {
+                setMatchWindowActive(true);
+                let timeLeft = 4;
+                setMatchCountdown(timeLeft);
+                setMessage(`Anyone can Match! Countdown: ${timeLeft}s... Click "Match Card!" quickly!`);
+
+                countdownIntervalRef.current = setInterval(() => {
+                    timeLeft -= 1;
+                    setMatchCountdown(timeLeft);
+                    if (timeLeft > 0) {
+                        setMessage(`Anyone can Match! Countdown: ${timeLeft}s... Click "Match Card!" quickly!`);
+                    } else {
+                        clearInterval(countdownIntervalRef.current);
+                        setMatchWindowActive(false);
+                        callbackOnComplete();
+                    }
+                }, 1000);
+            };
+
+            const handleCardClick = (pIdx, cIdx) => {
+                if (!players[pIdx].cards[cIdx] && gameState !== 'match-mode') return;
+
+                if (gameState === 'match-mode') {
+                    handleMatchAttempt(pIdx, cIdx);
+                    return;
+                }
+
+                if (gameState === 'setup' && pIdx === 0) {
+                    handleSetupPeek(cIdx);
+                    return;
+                }
+
+                if (activeCard && pIdx === 0 && gameState === 'playing') {
+                    swapCard(cIdx);
+                    return;
+                }
+
+                if (gameState === 'peek-power' && pIdx === 0) {
+                    revealTemp(pIdx, cIdx, () => {
+                        setGameState('playing');
+                        triggerMatchWindow(() => {
+                            endTurn();
+                        });
+                    });
+                }
+
+                if (gameState === 'spy-power' && pIdx === 1) {
+                    revealTemp(pIdx, cIdx, () => {
+                        setGameState('playing');
+                        triggerMatchWindow(() => {
+                            endTurn();
+                        });
+                    });
+                }
+
+                if (gameState === 'swap-power-1') {
+                    setSwapSelection([{ playerIdx: pIdx, cardIdx: cIdx }]);
+                    setMessage("Now click the second card to swap.");
+                    setGameState('swap-power-2');
+                } else if (gameState === 'swap-power-2') {
+                    const first = swapSelection[0];
+                    performSwap(first.playerIdx, first.cardIdx, pIdx, cIdx);
+                    setMessage("Cards swapped!");
+                    setTimeout(() => {
+                        setGameState('playing');
+                        triggerMatchWindow(() => {
+                            endTurn();
+                        });
+                    }, 1000);
+                }
+
+                if (gameState === 'king-look' && pIdx === 1) {
+                    revealTemp(pIdx, cIdx, () => {
+                        setMessage("Now swap any 2 cards. Click the first card.");
+                        setGameState('king-swap-1');
+                    });
+                } else if (gameState === 'king-swap-1') {
+                    setSwapSelection([{ playerIdx: pIdx, cardIdx: cIdx }]);
+                    setMessage("Click the second card to swap.");
+                    setGameState('king-swap-2');
+                } else if (gameState === 'king-swap-2') {
+                    const first = swapSelection[0];
+                    performSwap(first.playerIdx, first.cardIdx, pIdx, cIdx);
+                    setMessage("Cards swapped!");
+                    setTimeout(() => {
+                        setGameState('playing');
+                        triggerMatchWindow(() => {
+                            endTurn();
+                        });
+                    }, 1000);
+                }
+            };
+
+            const performSwap = (p1, c1, p2, c2) => {
+                const updatedPlayers = JSON.parse(JSON.stringify(players));
+                const temp = updatedPlayers[p1].cards[c1];
+                updatedPlayers[p1].cards[c1] = updatedPlayers[p2].cards[c2];
+                updatedPlayers[p2].cards[c2] = temp;
+                setPlayers(updatedPlayers);
+            };
+
+            const revealTemp = (pIdx, cIdx, callback) => {
+                const updated = JSON.parse(JSON.stringify(players));
+                if (!updated[pIdx].cards[cIdx]) return;
+                updated[pIdx].cards[cIdx].visible = true;
+                setPlayers(updated);
+
+                setTimeout(() => {
+                    if (updated[pIdx].cards[cIdx]) {
+                        updated[pIdx].cards[cIdx].visible = false;
+                    }
+                    setPlayers(updated);
+                    if (callback) callback();
+                }, 2000);
+            };
+
+            const executeAITurn = (isExtraTurn = false) => {
+                const newDeck = [...deck];
+                if (newDeck.length === 0) return;
+                const drawn = newDeck.pop();
+                setDeck(newDeck);
+
+                const p1Valid = players[0].cards.map((c, i) => c !== null ? i : null).filter(v => v !== null);
+                const p2Valid = players[1].cards.map((c, i) => c !== null ? i : null).filter(v => v !== null);
+
+                if (['8', '10', 'J', 'Q', 'K'].includes(drawn.value)) {
+                    setDiscardPile(prev => [...prev, drawn]);
+                    setMessage(`Opponent discarded ${drawn.value} to activate power!`);
+                    
+                    aiTimerRef.current = setTimeout(() => {
+                        if (drawn.value === '8') {
+                            setMessage("Opponent peeked at their own card.");
+                            triggerMatchWindow(() => completeAITurn());
+                        } else if (drawn.value === '10') {
+                            setMessage("Opponent spied on your card.");
+                            triggerMatchWindow(() => completeAITurn());
+                        } else if (drawn.value === 'J') {
+                            if (!isExtraTurn) {
+                                setMessage("Opponent plays again! (Jack Power)");
+                                aiTimerRef.current = setTimeout(() => { executeAITurn(true); }, 1500); 
+                            } else {
+                                setMessage("Opponent plays another Jack, but cannot chain extra turns!");
+                                triggerMatchWindow(() => completeAITurn());
+                            }
+                        } else if (drawn.value === 'Q') {
+                            if (p1Valid.length > 0 && p2Valid.length > 0) {
+                                performSwap(0, p1Valid[Math.floor(Math.random()*p1Valid.length)], 1, p2Valid[Math.floor(Math.random()*p2Valid.length)]);
+                            }
+                            setMessage("Opponent swapped a card!");
+                            triggerMatchWindow(() => completeAITurn());
+                        } else if (drawn.value === 'K') {
+                            if (p1Valid.length > 0 && p2Valid.length > 0) {
+                                performSwap(0, p1Valid[Math.floor(Math.random()*p1Valid.length)], 1, p2Valid[Math.floor(Math.random()*p2Valid.length)]);
+                            }
+                            setMessage("Opponent looked and swapped!");
+                            triggerMatchWindow(() => completeAITurn());
+                        }
+                    }, 1500);
+                } else {
+                    if (p2Valid.length > 0) {
+                        const p2Cards = [...players[1].cards];
+                        const swapIdx = p2Valid[Math.floor(Math.random() * p2Valid.length)];
+                        const swappedOut = p2Cards[swapIdx];
+                        p2Cards[swapIdx] = { ...drawn, visible: false };
+                        setDiscardPile(prev => [...prev, swappedOut]);
+                        setPlayers([players[0], { ...players[1], cards: p2Cards }]);
+                        setMessage("Opponent swapped a card.");
+                    }
+                    triggerMatchWindow(() => completeAITurn());
+                }
+            };
+
+            const endTurn = () => {
+                if (showCalledBy !== null) {
+                    const nextTurns = turnsAfterShow + 1;
+                    setTurnsAfterShow(nextTurns);
+                    if (nextTurns >= 1) {
+                        tallyScores();
+                        return;
+                    }
+                }
+
+                setCurrentPlayer(1);
+                setMessage("Opponent's turn...");
+                
+                aiTimerRef.current = setTimeout(() => {
+                    executeAITurn(false);
+                }, 1500);
+            };
+
+            const completeAITurn = () => {
+                const aiScore = players[1].cards.reduce((sum, c) => sum + getCardPoints(c), 0);
+                if (aiScore <= 5 && showCalledBy === null) {
+                    setMessage("Opponent yelled SHOW! Final turn!");
+                    setShowCalledBy(1);
+                    setCurrentPlayer(0);
+                } else {
+                    if (showCalledBy !== null) {
+                        tallyScores();
+                    } else {
+                        setCurrentPlayer(0);
+                        setMessage("Your turn! Draw or take discard.");
+                    }
+                }
+            };
+
+            const callShow = () => {
+                if (showCalledBy !== null) return;
+                setShowCalledBy(0);
+                setMessage("You yelled SHOW! Opponent gets one final turn.");
+                endTurn();
+            };
+
+            const tallyScores = () => {
+                const p1Score = players[0].cards.reduce((sum, c) => sum + getCardPoints(c), 0);
+                const p2Score = players[1].cards.reduce((sum, c) => sum + getCardPoints(c), 0);
+                
+                const p1Final = players[0].cards.map(c => c ? ({...c, visible: true}) : null);
+                const p2Final = players[1].cards.map(c => c ? ({...c, visible: true}) : null);
+                
+                setPlayers([
+                    { ...players[0], cards: p1Final },
+                    { ...players[1], cards: p2Final }
+                ]);
+                setScores({ p1: p1Score, p2: p2Score });
+                setGameState('ended');
+                setMessage(p1Score < p2Score ? "You win!" : (p1Score === p2Score ? "Tie!" : "Opponent wins!"));
+            };
+
+            const getActiveCount = (playerIdx) => {
+                return players[playerIdx].cards.filter(c => c !== null).length;
+            };
+
+            return (
+                <div className="flex flex-col min-h-screen justify-between py-6">
+                    <div className="text-center">
+                        <h1 className="text-4xl font-extrabold tracking-widest text-yellow-400 drop-shadow">CAMBIO</h1>
+                        <p className="text-sm text-emerald-200 mt-1">Memory Grid Edition</p>
+                    </div>
+
+                    <div className="w-full flex flex-col md:flex-row justify-around items-center my-6 gap-6">
+                        {/* Opponent */}
+                        <div className="flex flex-col items-center bg-emerald-800/50 p-4 rounded-xl border border-emerald-700 w-80 transition-all duration-300">
+                            <h2 className="text-lg font-semibold mb-3 text-red-300">Opponent ({getActiveCount(1)} Cards)</h2>
+                            <div className="grid grid-cols-2 gap-3">
+                                {players[1].cards.map((card, idx) => {
+                                    if (!card) return <div key={idx} className="w-20 h-28 rounded-lg border-2 border-dashed border-emerald-800/40 transition-all duration-300 scale-95 opacity-50"></div>;
+                                    return (
+                                        <div 
+                                            key={idx} 
+                                            onClick={() => handleCardClick(1, idx)}
+                                            className={`w-20 h-28 rounded-lg flex items-center justify-center font-bold text-xl cursor-pointer border-2 transition-all duration-300 ease-in-out transform hover:scale-105 active:scale-95 shadow-lg ${
+                                                card.visible ? 'bg-white text-black border-yellow-400 rotate-0' : 'bg-blue-800 border-white text-white hover:bg-blue-700'
+                                            }`}
+                                        >
+                                            {card.visible ? `${card.value}${card.suit}` : "?"}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Center Pile */}
+                        <div className="flex flex-col items-center gap-4 bg-emerald-950/60 p-5 rounded-2xl border border-emerald-800 transition-all duration-300">
+                            <div className="flex gap-6">
+                                <button 
+                                    onClick={drawFromDeck} 
+                                    disabled={gameState !== 'playing' || activeCard || currentPlayer !== 0 || matchWindowActive}
+                                    className="w-20 h-28 bg-red-800 border-2 border-white rounded-lg flex items-center justify-center font-bold text-white hover:bg-red-700 disabled:opacity-30 disabled:scale-95 text-3xl transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-md"
+                                >
+                                    🂠
+                                </button>
+                                <button 
+                                    onClick={drawFromDiscard}
+                                    disabled={gameState !== 'playing' || activeCard || discardPile.length === 0 || currentPlayer !== 0 || matchWindowActive}
+                                    className="w-20 h-28 bg-white text-black border-2 border-yellow-400 rounded-lg flex items-center justify-center font-bold text-xl disabled:opacity-30 disabled:scale-95 transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-md"
+                                >
+                                    {discardPile.length > 0 ? `${discardPile[discardPile.length - 1].value}${discardPile[discardPile.length - 1].suit}` : "Empty"}
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={enterMatchMode}
+                                disabled={discardPile.length === 0 || gameState === 'setup' || gameState === 'ended'}
+                                className={`w-full text-white font-extrabold py-2 px-4 rounded-lg transition-all duration-300 transform active:scale-95 ${
+                                    matchWindowActive 
+                                        ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-900 animate-pulse ring-4 ring-yellow-300 scale-105' 
+                                        : 'bg-red-600 hover:bg-red-500 disabled:opacity-50'
+                                }`}
+                            >
+                                {matchWindowActive ? `🔥 Match Card! (${matchCountdown}s)` : "🔥 Match Card!"}
+                            </button>
+
+                            {activeCard && (
+                                <div className="flex flex-col items-center border-t border-emerald-800 pt-3 w-full animate-fade-in">
+                                    <div className={`w-16 h-24 bg-white text-black border-2 border-yellow-400 rounded-lg flex flex-col items-center justify-center font-bold text-lg transition-all duration-300 transform scale-110 shadow-xl ${activeCard.isRed ? 'text-red-600' : 'text-black'}`}>
+                                        <div>{activeCard.value}</div>
+                                        <div className="text-2xl">{activeCard.suit}</div>
+                                    </div>
+                                    <button onClick={discardActive} className="mt-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-1 px-3 rounded transition-all duration-300 active:scale-90">
+                                        Discard
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Player */}
+                        <div className="flex flex-col items-center bg-emerald-800/50 p-4 rounded-xl border border-emerald-700 w-80 transition-all duration-300">
+                            <h2 className="text-lg font-semibold mb-3 text-green-300">Your Hand ({getActiveCount(0)} Cards)</h2>
+                            <div className="grid grid-cols-2 gap-3">
+                                {players[0].cards.map((card, idx) => {
+                                    if (!card) return <div key={idx} className="w-20 h-28 rounded-lg border-2 border-dashed border-emerald-800/40 transition-all duration-300 scale-95 opacity-50"></div>;
+                                    return (
+                                        <div 
+                                            key={idx} 
+                                            onClick={() => handleCardClick(0, idx)}
+                                            className={`w-20 h-28 rounded-lg flex items-center justify-center font-bold text-xl cursor-pointer border-2 transition-all duration-300 ease-in-out transform hover:scale-105 hover:-translate-y-1 active:scale-95 shadow-lg ${
+                                                card.visible || (activeCard && gameState === 'playing')
+                                                    ? 'bg-white text-black border-yellow-400 rotate-0' 
+                                                    : 'bg-red-800 border-white text-white hover:bg-red-700'
+                                            }`}
+                                        >
+                                            {card.visible ? `${card.value}${card.suit}` : (activeCard ? "Swap" : "?")}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="w-full max-w-xl mx-auto bg-black/40 border border-emerald-800 rounded-lg p-3 text-center my-4 transition-all duration-300">
+                        <p className="text-md font-medium text-white">{message}</p>
+                    </div>
+
+                    <div className="w-full flex flex-col sm:flex-row justify-between items-center bg-emerald-950 p-4 rounded-xl gap-4 transition-all duration-300">
+                        <div className="flex gap-4">
+                            <button onClick={startNewGame} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-extrabold py-2 px-6 rounded-lg transition-all duration-300 transform active:scale-95">Restart</button>
+                            <button onClick={callShow} disabled={gameState !== 'playing' || showCalledBy !== null || matchWindowActive} className="bg-orange-600 hover:bg-orange-500 text-white font-extrabold py-2 px-6 rounded-lg disabled:opacity-50 transition-all duration-300 transform active:scale-95">Show!</button>
+                        </div>
+                        {scores ? (
+                            <div className="flex gap-6 text-lg font-bold">
+                                <span className="text-green-300">You: {scores.p1}</span>
+                                <span className="text-red-300">Opponent: {scores.p2}</span>
+                            </div>
+                        ) : (
+                            <div className="text-xs text-emerald-400">Joker (-1) | J (11) | Q (12) | K (13)</div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
