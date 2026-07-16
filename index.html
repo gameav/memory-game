@@ -151,7 +151,7 @@
 
             const aiTimerRef = useRef(null);
             const botMatchTimerRef = useRef(null);
-            const countdownIntervalRef = useRef(null);
+            const matchCallbackRef = useRef(null);
 
             useEffect(() => {
                 return () => clearTimers();
@@ -222,13 +222,16 @@
                 setAnimatingIndices([]);
                 setReadyPlayers(new Array(count).fill(false));
                 setPreMatchState(null);
+                matchCallbackRef.current = null;
                 clearTimers();
             };
 
             const clearTimers = () => {
                 if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
-                if (botMatchTimerRef.current) clearTimeout(botMatchTimerRef.current);
-                if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+                if (botMatchTimerRef.current) {
+                    clearTimeout(botMatchTimerRef.current);
+                    botMatchTimerRef.current = null;
+                }
             };
 
             const handleSetupPeek = (index) => {
@@ -347,26 +350,23 @@
             };
 
             const handleMatchAttempt = (pIdx, cIdx, wasBotTriggered = false) => {
-                // If match window is already closed, do nothing
                 if (!matchWindowActive && gameState !== 'match-mode') return;
 
                 const targetCard = players[pIdx].cards[cIdx];
                 if (!targetCard) return;
 
-                // Compare target to activeCard if we are holding a drawn card, otherwise look at the top of the discard pile
                 const comparisonCard = activeCard ? activeCard : discardPile[discardPile.length - 1];
                 if (!comparisonCard) return;
 
                 clearTimers();
                 setMatchWindowActive(false);
+                matchCallbackRef.current = null;
 
-                // Handle exact simultaneous slap (50/50)
                 if (!wasBotTriggered && botMatchTimerRef.current) {
                     const coinFlip = Math.random() < 0.5;
                     if (!coinFlip) {
                         setMessage("Too slow! A bot beat you to the match!");
                         setTimeout(() => {
-                            // Find which bot was scheduled to slap
                             for (let pIdxBot = 1; pIdxBot < playerCount; pIdxBot++) {
                                 for (let cIdxBot = 0; cIdxBot < players[pIdxBot].cards.length; cIdxBot++) {
                                     const known = aiMemory[`${pIdxBot}-${cIdxBot}`];
@@ -384,7 +384,6 @@
                 if (targetCard.value === comparisonCard.value) {
                     executeMatchSuccess(pIdx, cIdx, comparisonCard);
                 } else {
-                    // Penalty Routine
                     setAnimatingIndices([{ playerIdx: pIdx, cardIdx: cIdx, action: 'wrong' }]);
                     
                     setTimeout(() => {
@@ -393,10 +392,8 @@
                         const penaltyCard = newDeck.pop();
                         const updatedPlayers = JSON.parse(JSON.stringify(players));
 
-                        // Add penalty card
                         updatedPlayers[pIdx].cards.push({ ...penaltyCard, visible: false, id: `p${pIdx}-penalty-${Date.now()}` });
 
-                        // High stakes active card check:
                         if (activeCard && pIdx === 0) {
                             finalMessage = `WRONG MATCH! The drawn ${activeCard.value}${activeCard.suit} is lost, and you get a penalty!`;
                             setDiscardPile(prev => [...prev, activeCard]);
@@ -429,7 +426,6 @@
 
                     updatedPlayers[pIdx].cards[cIdx] = null;
                     
-                    // If matching with active card, discard both
                     if (activeCard) {
                         setDiscardPile(prev => [...prev, targetCard, activeCard]);
                         setActiveCard(null);
@@ -446,7 +442,6 @@
                             restorePreMatchOrProceed();
                         }, 1800);
                     } else {
-                        // Card gift routine: Bot matches, player 1 must give them a card
                         const validP1Indices = updatedPlayers[0].cards.map((c, i) => c !== null ? i : null).filter(v => v !== null);
                         if (validP1Indices.length > 0) {
                             setMessage(`Match! Giving card to ${players[pIdx].name}...`);
@@ -491,23 +486,23 @@
             const cancelMatchWindow = () => {
                 clearTimers();
                 setMatchWindowActive(false);
+                matchCallbackRef.current = null;
                 restorePreMatchOrProceed();
             };
 
             const triggerMatchWindow = (callbackOnComplete) => {
+                matchCallbackRef.current = callbackOnComplete;
                 const topDiscard = activeCard ? activeCard : (discardPile[discardPile.length - 1] || activeCard);
                 let botWillMatch = false;
 
                 if (topDiscard) {
-                    // Check if bots know any matching cards
                     for (let pIdx = 1; pIdx < playerCount; pIdx++) {
                         for (let cIdx = 0; cIdx < players[pIdx].cards.length; cIdx++) {
                             const known = aiMemory[`${pIdx}-${cIdx}`];
                             if (known && known.value === topDiscard.value) {
                                 botWillMatch = true;
-                                clearTimers();
+                                if (botMatchTimerRef.current) clearTimeout(botMatchTimerRef.current);
 
-                                // Set random delay (600ms to 1800ms) to make bots react like humans
                                 const delay = Math.floor(Math.random() * 1200) + 600;
                                 botMatchTimerRef.current = setTimeout(() => {
                                     handleMatchAttempt(pIdx, cIdx, true);
@@ -520,24 +515,30 @@
                 }
 
                 setMatchWindowActive(true);
-                let timeLeft = 4;
-                setMatchCountdown(timeLeft);
-                setMessage(`Match Window open! (${timeLeft}s)`);
+                setMatchCountdown(4);
+                setMessage("Match Window open! (4s)");
+            };
 
-                countdownIntervalRef.current = setInterval(() => {
-                    timeLeft -= 1;
-                    setMatchCountdown(timeLeft);
-                    if (timeLeft > 0) {
-                        setMessage(`Match Window open! (${timeLeft}s)`);
-                    } else {
-                        clearInterval(countdownIntervalRef.current);
-                        setMatchWindowActive(false);
-                        if (!botWillMatch) {
-                            callbackOnComplete();
+            // Bulletproof Declarative Match Window Countdown Effect
+            useEffect(() => {
+                if (!matchWindowActive) return;
+
+                if (matchCountdown > 0) {
+                    const timer = setTimeout(() => {
+                        setMatchCountdown(prev => prev - 1);
+                        setMessage(`Match Window open! (${matchCountdown - 1}s)`);
+                    }, 1000);
+                    return () => clearTimeout(timer);
+                } else {
+                    setMatchWindowActive(false);
+                    if (!botMatchTimerRef.current) {
+                        if (matchCallbackRef.current) {
+                            matchCallbackRef.current();
+                            matchCallbackRef.current = null;
                         }
                     }
-                }, 1000);
-            };
+                }
+            }, [matchWindowActive, matchCountdown]);
 
             const handleCardClick = (pIdx, cIdx) => {
                 if (!players[pIdx].cards[cIdx] && gameState !== 'match-mode') return;
@@ -1085,7 +1086,6 @@
                                     {matchWindowActive ? `${matchCountdown}s` : "Match!"}
                                 </button>
 
-                                {/* Fixed cancel match condition: show when timer is active OR when in match-mode selection */}
                                 {(matchWindowActive || gameState === 'match-mode') && (
                                     <button 
                                         onClick={cancelMatchWindow}
