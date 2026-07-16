@@ -90,7 +90,7 @@
         }
     </style>
 </head>
-<body class="bg-emerald-900 text-white p-2 sm:p-6 transition-colors duration-500 h-full flex flex-col justify-center">
+<body class="bg-[#00FF00] text-white p-2 sm:p-6 transition-colors duration-500 h-full flex flex-col justify-center">
     <div id="root" class="w-full max-w-6xl mx-auto h-full flex flex-col justify-between"></div>
 
     <script type="text/babel">
@@ -142,7 +142,6 @@
             const [matchCountdown, setMatchCountdown] = useState(0);
             const [readyPlayers, setReadyPlayers] = useState([]); 
 
-            // AI specific memory system tracking: { [pIdx-cIdx]: { value, suit, knownAt } }
             const [aiMemory, setAiMemory] = useState({});
 
             const [animatingCard, setAnimatingCard] = useState(null);
@@ -655,7 +654,6 @@
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === 'J') {
                             setMessage(`${players[botIdx].name} gets another turn from the Jack!`);
-                            // DO NOT trigger normal completeAITurn. Execute directly.
                             aiTimerRef.current = setTimeout(() => { 
                                 executeAITurn(botIdx, true); 
                             }, 1800);
@@ -707,7 +705,7 @@
             };
 
             const completeAITurn = (botIdx, wasJack = false) => {
-                if (wasJack) return; // Completely abort any turn transition if it's a Jack turn hook
+                if (wasJack) return;
 
                 const nextReady = [...readyPlayers];
                 nextReady[botIdx] = true;
