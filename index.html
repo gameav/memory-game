@@ -192,10 +192,9 @@
                     });
                 }
 
-                // Initial Bot Memory (Bots peek 2 of their own cards at setup, just like humans)
                 const initialMemory = {};
                 for (let p = 1; p < count; p++) {
-                    const peekedIndices = [0, 1]; // Bots inspect their first two slots
+                    const peekedIndices = [0, 1];
                     peekedIndices.forEach(idx => {
                         const card = generatedPlayers[p].cards[idx];
                         initialMemory[`${p}-${idx}`] = { value: card.value, suit: card.suit, id: card.id };
@@ -319,7 +318,6 @@
                     } else if (discarded.value === 'J') {
                         setMessage("Power: Jack! Extra turn.");
                         setGameState('playing'); 
-                        // Note: Keep currentPlayer as 0 (You), does not trigger prepareNextTurn()
                     } else if (discarded.value === 'Q') {
                         setMessage("Power: Swap any 2. Tap the first card.");
                         setGameState('swap-power-1');
@@ -354,7 +352,6 @@
                     setAnimatingIndices([{ playerIdx: pIdx, cardIdx: cIdx, action: 'burn' }]);
 
                     setTimeout(() => {
-                        // Clear the burned card from bot memory registers globally
                         for (let k = 0; k < playerCount; k++) {
                             updateAiMemory(k, cIdx, null);
                         }
@@ -388,7 +385,6 @@
                                         nextPlayers[0].cards[randomP1Index] = null;
                                         nextPlayers[pIdx].cards[cIdx] = givenCard;
                                         
-                                        // Update memory because card was given to bot
                                         updateAiMemory(pIdx, cIdx, givenCard);
 
                                         setPlayers(nextPlayers);
@@ -425,15 +421,12 @@
             };
 
             const triggerMatchWindow = (callbackOnComplete) => {
-                // Bots check if they know they have a match before window timer runs
                 const topDiscard = discardPile[discardPile.length - 1] || activeCard;
                 if (topDiscard) {
-                    // Search AI memories to see if any bot knows they possess a matching card value
                     for (let pIdx = 1; pIdx < playerCount; pIdx++) {
                         for (let cIdx = 0; cIdx < players[pIdx].cards.length; cIdx++) {
                             const known = aiMemory[`${pIdx}-${cIdx}`];
                             if (known && known.value === topDiscard.value) {
-                                // Trigger bot matching immediately
                                 clearTimers();
                                 handleMatchAttempt(pIdx, cIdx);
                                 return;
@@ -532,7 +525,6 @@
                     updatedPlayers[p1].cards[c1] = updatedPlayers[p2].cards[c2];
                     updatedPlayers[p2].cards[c2] = temp;
                     
-                    // Update AI knowledge banks for swapped cards
                     const m1 = aiMemory[`${p1}-${c1}`];
                     const m2 = aiMemory[`${p2}-${c2}`];
                     
@@ -643,7 +635,6 @@
                     
                     aiTimerRef.current = setTimeout(() => {
                         if (drawn.value === '8') {
-                            // Bot peeks one of its own cards it doesn't know yet
                             const unknownIndices = ownValid.filter(idx => !aiMemory[`${botIdx}-${idx}`]);
                             const peekTarget = unknownIndices.length > 0 ? unknownIndices[0] : ownValid[0];
                             
@@ -651,9 +642,8 @@
                             updateAiMemory(botIdx, peekTarget, targetCard);
 
                             setMessage(`${players[botIdx].name} peeked.`);
-                            triggerMatchWindow(() => completeAITurn(botIdx));
+                            triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === '10') {
-                            // Bot spies on another player card
                             const opponents = targetablePlayers.filter(tp => tp.playerIdx !== botIdx);
                             const chosenOpp = opponents[Math.floor(Math.random() * opponents.length)];
                             const chosenCardIdx = chosenOpp.validIndices[Math.floor(Math.random() * chosenOpp.validIndices.length)];
@@ -662,10 +652,10 @@
                             updateAiMemory(chosenOpp.playerIdx, chosenCardIdx, targetCard);
 
                             setMessage(`${players[botIdx].name} spied on a card.`);
-                            triggerMatchWindow(() => completeAITurn(botIdx));
+                            triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === 'J') {
-                            // Jack Power extra turn!
-                            setMessage(`${players[botIdx].name} draws again from Jack!`);
+                            setMessage(`${players[botIdx].name} gets another turn from the Jack!`);
+                            // DO NOT trigger normal completeAITurn. Execute directly.
                             aiTimerRef.current = setTimeout(() => { 
                                 executeAITurn(botIdx, true); 
                             }, 1800);
@@ -678,14 +668,13 @@
                                     targetTP.playerIdx, targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)]
                                 );
                             } else {
-                                triggerMatchWindow(() => completeAITurn(botIdx));
+                                triggerMatchWindow(() => completeAITurn(botIdx, false));
                             }
                         }
                     }, 1500);
                 } else {
                     if (ownValid.length > 0) {
                         const botCards = [...players[botIdx].cards];
-                        // Bot checks if they know they have a high-value card to replace, otherwise replaces random card
                         let swapIdx = ownValid[Math.floor(Math.random() * ownValid.length)];
                         for (let idx of ownValid) {
                             const known = aiMemory[`${botIdx}-${idx}`];
@@ -702,7 +691,6 @@
                             botCards[swapIdx] = { ...drawn, visible: false, id: `p${botIdx}-${swapIdx}-${Date.now()}` };
                             setDiscardPile(prev => [...prev, swappedOut]);
                             
-                            // Bot updates memory for the new card slot
                             updateAiMemory(botIdx, swapIdx, drawn);
 
                             const nextPlayers = [...players];
@@ -710,15 +698,17 @@
                             setPlayers(nextPlayers);
                             setAnimatingIndices([]);
                             setMessage(`${players[botIdx].name} swapped.`);
-                            triggerMatchWindow(() => completeAITurn(botIdx));
+                            triggerMatchWindow(() => completeAITurn(botIdx, false));
                         }, 350);
                     } else {
-                        triggerMatchWindow(() => completeAITurn(botIdx));
+                        triggerMatchWindow(() => completeAITurn(botIdx, false));
                     }
                 }
             };
 
-            const completeAITurn = (botIdx) => {
+            const completeAITurn = (botIdx, wasJack = false) => {
+                if (wasJack) return; // Completely abort any turn transition if it's a Jack turn hook
+
                 const nextReady = [...readyPlayers];
                 nextReady[botIdx] = true;
                 setReadyPlayers(nextReady);
@@ -1189,7 +1179,7 @@
         }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        root.render(App());
     </script>
 </body>
 </html>
