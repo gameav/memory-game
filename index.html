@@ -43,32 +43,32 @@
         /* DESKTOP SPECIFIC LAYOUT */
         @media (min-width: 1024px) {
             .card-fluid {
-                width: 5.5rem;
-                height: 7.7rem;
+                width: 7.5rem;
+                height: 10.5rem;
                 max-width: none;
                 max-height: none;
-                font-size: 1.5rem !important;
-            }
-            .pile-fluid {
-                width: 6.5rem !important;
-                height: 9rem !important;
-                max-width: none;
-                max-height: none;
-                font-size: 1.5rem !important;
-            }
-            .laptop-text-large {
-                font-size: 1.1rem !important;
-            }
-            .laptop-title-large {
                 font-size: 2rem !important;
             }
-            .laptop-message-large {
+            .pile-fluid {
+                width: 8.5rem !important;
+                height: 12rem !important;
+                max-width: none;
+                max-height: none;
+                font-size: 2rem !important;
+            }
+            .laptop-text-large {
                 font-size: 1.25rem !important;
-                padding: 0.5rem !important;
+            }
+            .laptop-title-large {
+                font-size: 2.5rem !important;
+            }
+            .laptop-message-large {
+                font-size: 1.5rem !important;
+                padding: 0.75rem !important;
             }
             .laptop-btn-large {
-                font-size: 1rem !important;
-                padding: 0.5rem 1.25rem !important;
+                font-size: 1.1rem !important;
+                padding: 0.75rem 1.75rem !important;
             }
         }
 
@@ -152,6 +152,21 @@
             const aiTimerRef = useRef(null);
             const botMatchTimerRef = useRef(null);
             const countdownIntervalRef = useRef(null);
+
+            // Refs to prevent stale closures during asynchronous bot turns (e.g. Jack double turn loop)
+            const deckRef = useRef(deck);
+            const playersRef = useRef(players);
+            const aiMemoryRef = useRef(aiMemory);
+            const showCalledByRef = useRef(showCalledBy);
+            const readyPlayersRef = useRef(readyPlayers);
+            const turnsAfterShowRef = useRef(turnsAfterShow);
+
+            useEffect(() => { deckRef.current = deck; }, [deck]);
+            useEffect(() => { playersRef.current = players; }, [players]);
+            useEffect(() => { aiMemoryRef.current = aiMemory; }, [aiMemory]);
+            useEffect(() => { showCalledByRef.current = showCalledBy; }, [showCalledBy]);
+            useEffect(() => { readyPlayersRef.current = readyPlayers; }, [readyPlayers]);
+            useEffect(() => { turnsAfterShowRef.current = turnsAfterShow; }, [turnsAfterShow]);
 
             useEffect(() => {
                 return () => clearTimers();
@@ -691,12 +706,15 @@
             };
 
             const executeAITurn = (botIdx, isExtraTurn = false) => {
-                const newDeck = [...deck];
-                if (newDeck.length === 0) return;
-                const drawn = newDeck.pop();
-                setDeck(newDeck);
+                const currentDeck = [...deckRef.current];
+                if (currentDeck.length === 0) return;
+                const drawn = currentDeck.pop();
+                setDeck(currentDeck);
 
-                const targetablePlayers = players.map((p, i) => ({
+                const currentPlayers = playersRef.current;
+                const currentAiMemory = aiMemoryRef.current;
+
+                const targetablePlayers = currentPlayers.map((p, i) => ({
                     playerIdx: i,
                     validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
                 })).filter(tp => tp.validIndices.length > 0);
@@ -705,39 +723,48 @@
 
                 if (['8', '10', 'J', 'Q', 'K'].includes(drawn.value)) {
                     setDiscardPile(prev => [...prev, drawn]);
-                    setMessage(`${players[botIdx].name} played power card ${drawn.value}!`);
+                    setMessage(`${currentPlayers[botIdx].name} played power card ${drawn.value}!`);
                     
                     aiTimerRef.current = setTimeout(() => {
+                        // Retrieve absolute latest states to prevent stale timeouts
+                        const latestPlayers = playersRef.current;
+                        const latestAiMemory = aiMemoryRef.current;
+                        const latestTargetable = latestPlayers.map((p, i) => ({
+                            playerIdx: i,
+                            validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
+                        })).filter(tp => tp.validIndices.length > 0);
+                        const latestOwnValid = latestTargetable.find(tp => tp.playerIdx === botIdx)?.validIndices || [];
+
                         if (drawn.value === '8') {
-                            const unknownIndices = ownValid.filter(idx => !aiMemory[`${botIdx}-${idx}`]);
-                            const peekTarget = unknownIndices.length > 0 ? unknownIndices[0] : ownValid[0];
+                            const unknownIndices = latestOwnValid.filter(idx => !latestAiMemory[`${botIdx}-${idx}`]);
+                            const peekTarget = unknownIndices.length > 0 ? unknownIndices[0] : latestOwnValid[0];
                             
-                            const targetCard = players[botIdx].cards[peekTarget];
+                            const targetCard = latestPlayers[botIdx].cards[peekTarget];
                             updateAiMemory(botIdx, peekTarget, targetCard);
 
-                            setMessage(`${players[botIdx].name} peeked.`);
+                            setMessage(`${latestPlayers[botIdx].name} peeked.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === '10') {
-                            const opponents = targetablePlayers.filter(tp => tp.playerIdx !== botIdx);
+                            const opponents = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
                             const chosenOpp = opponents[Math.floor(Math.random() * opponents.length)];
                             const chosenCardIdx = chosenOpp.validIndices[Math.floor(Math.random() * chosenOpp.validIndices.length)];
                             
-                            const targetCard = players[chosenOpp.playerIdx].cards[chosenCardIdx];
+                            const targetCard = latestPlayers[chosenOpp.playerIdx].cards[chosenCardIdx];
                             updateAiMemory(chosenOpp.playerIdx, chosenCardIdx, targetCard);
 
-                            setMessage(`${players[botIdx].name} spied on a card.`);
+                            setMessage(`${latestPlayers[botIdx].name} spied on a card.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === 'J') {
-                            setMessage(`${players[botIdx].name} gets another turn from the Jack!`);
+                            setMessage(`${latestPlayers[botIdx].name} gets another turn from the Jack!`);
                             aiTimerRef.current = setTimeout(() => { 
                                 executeAITurn(botIdx, true); 
                             }, 1800);
                         } else if (drawn.value === 'Q' || drawn.value === 'K') {
-                            const otherPlayers = targetablePlayers.filter(tp => tp.playerIdx !== botIdx);
-                            if (otherPlayers.length > 0 && ownValid.length > 0) {
+                            const otherPlayers = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
+                            if (otherPlayers.length > 0 && latestOwnValid.length > 0) {
                                 const targetTP = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
                                 performSwap(
-                                    botIdx, ownValid[Math.floor(Math.random() * ownValid.length)], 
+                                    botIdx, latestOwnValid[Math.floor(Math.random() * latestOwnValid.length)], 
                                     targetTP.playerIdx, targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)]
                                 );
                             } else {
@@ -747,10 +774,10 @@
                     }, 1500);
                 } else {
                     if (ownValid.length > 0) {
-                        const botCards = [...players[botIdx].cards];
+                        const botCards = [...currentPlayers[botIdx].cards];
                         let swapIdx = ownValid[Math.floor(Math.random() * ownValid.length)];
                         for (let idx of ownValid) {
-                            const known = aiMemory[`${botIdx}-${idx}`];
+                            const known = currentAiMemory[`${botIdx}-${idx}`];
                             if (known && getCardPoints(known) > 8) {
                                 swapIdx = idx;
                                 break;
@@ -766,11 +793,11 @@
                             
                             updateAiMemory(botIdx, swapIdx, drawn);
 
-                            const nextPlayers = [...players];
+                            const nextPlayers = [...playersRef.current];
                             nextPlayers[botIdx].cards = botCards;
                             setPlayers(nextPlayers);
                             setAnimatingIndices([]);
-                            setMessage(`${players[botIdx].name} swapped.`);
+                            setMessage(`${playersRef.current[botIdx].name} swapped.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         }, 350);
                     } else {
@@ -782,18 +809,18 @@
             const completeAITurn = (botIdx, wasJack = false) => {
                 if (wasJack) return;
 
-                const nextReady = [...readyPlayers];
+                const nextReady = [...readyPlayersRef.current];
                 nextReady[botIdx] = true;
                 setReadyPlayers(nextReady);
 
-                const botScore = players[botIdx].cards.reduce((sum, c) => sum + getCardPoints(c), 0);
-                if (botScore <= 5 && showCalledBy === null) {
-                    setMessage(`${players[botIdx].name} called SHOW!`);
+                const botScore = playersRef.current[botIdx].cards.reduce((sum, c) => sum + getCardPoints(c), 0);
+                if (botScore <= 5 && showCalledByRef.current === null) {
+                    setMessage(`${playersRef.current[botIdx].name} called SHOW!`);
                     setShowCalledBy(botIdx);
                     setGameState('waiting-ready');
                 } else {
-                    if (showCalledBy !== null) {
-                        const nextTurns = turnsAfterShow + 1;
+                    if (showCalledByRef.current !== null) {
+                        const nextTurns = turnsAfterShowRef.current + 1;
                         setTurnsAfterShow(nextTurns);
                         if (nextTurns >= playerCount - 1) {
                             tallyScores();
@@ -833,12 +860,12 @@
             };
 
             const tallyScores = () => {
-                const finalPlayers = players.map(p => ({
+                const finalPlayers = playersRef.current.map(p => ({
                     ...p,
                     cards: p.cards.map(c => c ? ({...c, visible: true}) : null)
                 }));
                 
-                const calculatedScores = players.map(p => 
+                const calculatedScores = playersRef.current.map(p => 
                     p.cards.reduce((sum, c) => sum + getCardPoints(c), 0)
                 );
 
@@ -849,7 +876,7 @@
                 const minScore = Math.min(...calculatedScores);
                 const winners = [];
                 calculatedScores.forEach((score, idx) => {
-                    if (score === minScore) winners.push(idx === 0 ? "You" : players[idx].name);
+                    if (score === minScore) winners.push(idx === 0 ? "You" : playersRef.current[idx].name);
                 });
 
                 setMessage(`Winner: ${winners.join(" & ")} (${minScore} pts)`);
@@ -1043,7 +1070,7 @@
                         </div>
 
                         {/* CENTER PILING BOX */}
-                        <div className="flex flex-col items-center gap-2 bg-emerald-950/60 p-2 md:p-4 rounded-2xl border border-emerald-800 w-[30vw] md:w-48 tight-padding lg:w-[18rem] lg:p-6 lg:gap-4">
+                        <div className="flex flex-col items-center gap-2 bg-emerald-950/60 p-2 md:p-4 rounded-2xl border border-emerald-800 w-[30vw] md:w-48 tight-padding lg:w-[24rem] lg:p-6 lg:gap-4">
                             <div className="flex gap-1 md:gap-3 justify-center items-center lg:gap-4">
                                 <button 
                                     onClick={drawFromDeck} 
@@ -1074,6 +1101,7 @@
                                     {matchWindowActive ? `${matchCountdown}s` : "Match!"}
                                 </button>
 
+                                {/* Fixed cancel match condition: show when timer is active OR when in match-mode selection */}
                                 {(matchWindowActive || gameState === 'match-mode') && (
                                     <button 
                                         onClick={cancelMatchWindow}
@@ -1268,6 +1296,7 @@
             );
         }
 
+        // Standard React 18 DOM Mounting
         const container = document.getElementById('root');
         const root = ReactDOM.createRoot(container);
         root.render(React.createElement(App));
