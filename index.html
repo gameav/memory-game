@@ -145,6 +145,7 @@
 
             const [aiMemory, setAiMemory] = useState({});
             const [preMatchState, setPreMatchState] = useState(null); 
+            const [giftTargetIdx, setGiftTargetIdx] = useState(null);
 
             const [animatingCard, setAnimatingCard] = useState(null);
             const [animatingIndices, setAnimatingIndices] = useState([]);
@@ -153,7 +154,6 @@
             const botMatchTimerRef = useRef(null);
             const countdownIntervalRef = useRef(null);
 
-            // Refs to prevent stale closures during asynchronous bot turns (e.g. Jack double turn loop)
             const deckRef = useRef(deck);
             const playersRef = useRef(players);
             const aiMemoryRef = useRef(aiMemory);
@@ -237,6 +237,7 @@
                 setAnimatingIndices([]);
                 setReadyPlayers(new Array(count).fill(false));
                 setPreMatchState(null);
+                setGiftTargetIdx(null);
                 clearTimers();
             };
 
@@ -382,7 +383,7 @@
                                 for (let cIdxBot = 0; cIdxBot < players[pIdxBot].cards.length; cIdxBot++) {
                                     const known = aiMemory[`${pIdxBot}-${cIdxBot}`];
                                     if (known && known.value === comparisonCard.value) {
-                                        executeMatchSuccess(pIdxBot, cIdxBot, comparisonCard);
+                                        executeMatchSuccess(pIdxBot, cIdxBot, comparisonCard, true);
                                         return;
                                     }
                                 }
@@ -393,7 +394,7 @@
                 }
 
                 if (targetCard.value === comparisonCard.value) {
-                    executeMatchSuccess(pIdx, cIdx, comparisonCard);
+                    executeMatchSuccess(pIdx, cIdx, comparisonCard, wasBotTriggered);
                 } else {
                     setAnimatingIndices([{ playerIdx: pIdx, cardIdx: cIdx, action: 'wrong' }]);
                     
@@ -423,7 +424,7 @@
                 }
             };
 
-            const executeMatchSuccess = (pIdx, cIdx, comparisonCard) => {
+            const executeMatchSuccess = (pIdx, cIdx, comparisonCard, wasBotTriggered = false) => {
                 setAnimatingIndices([{ playerIdx: pIdx, cardIdx: cIdx, action: 'burn' }]);
 
                 setTimeout(() => {
@@ -449,12 +450,21 @@
                     setMessage(matchMsg);
 
                     if (pIdx === 0) {
+                        // You matched your own card successfully, no gifting needed
                         setTimeout(() => {
                             restorePreMatchOrProceed();
                         }, 1800);
                     } else {
+                        // An opponent's card was matched!
                         const validP1Indices = updatedPlayers[0].cards.map((c, i) => c !== null ? i : null).filter(v => v !== null);
-                        if (validP1Indices.length > 0) {
+                        
+                        // If YOU matched their card manually, you get to choose what to give them
+                        if (!wasBotTriggered && validP1Indices.length > 0) {
+                            setGiftTargetIdx(pIdx);
+                            setGameState('gift-card');
+                            setMessage(`Match Success! Tap one of YOUR cards to give to ${players[pIdx].name}.`);
+                        } else if (validP1Indices.length > 0) {
+                            // If a bot matched its own card or another bot, carry out a random gift to keep pacing fluid
                             setMessage(`Match! Giving card to ${players[pIdx].name}...`);
                             setTimeout(() => {
                                 const randomP1Index = validP1Indices[Math.floor(Math.random() * validP1Indices.length)];
@@ -548,6 +558,31 @@
 
                 if (gameState === 'match-mode') {
                     handleMatchAttempt(pIdx, cIdx);
+                    return;
+                }
+
+                if (gameState === 'gift-card') {
+                    if (pIdx === 0) {
+                        const targetBotIdx = giftTargetIdx;
+                        const botCardSlot = players[targetBotIdx].cards.findIndex(c => c === null);
+                        
+                        if (botCardSlot !== -1) {
+                            const givenCard = players[0].cards[cIdx];
+                            setAnimatingIndices([{ playerIdx: 0, cardIdx: cIdx, targetPlayerIdx: targetBotIdx, targetCardIdx: botCardSlot }]);
+                            
+                            setTimeout(() => {
+                                const updatedPlayers = JSON.parse(JSON.stringify(players));
+                                updatedPlayers[0].cards[cIdx] = null;
+                                updatedPlayers[targetBotIdx].cards[botCardSlot] = givenCard;
+                                
+                                updateAiMemory(targetBotIdx, botCardSlot, givenCard);
+                                setPlayers(updatedPlayers);
+                                setAnimatingIndices([]);
+                                setGiftTargetIdx(null);
+                                restorePreMatchOrProceed();
+                            }, 350);
+                        }
+                    }
                     return;
                 }
 
@@ -726,7 +761,6 @@
                     setMessage(`${currentPlayers[botIdx].name} played power card ${drawn.value}!`);
                     
                     aiTimerRef.current = setTimeout(() => {
-                        // Retrieve absolute latest states to prevent stale timeouts
                         const latestPlayers = playersRef.current;
                         const latestAiMemory = aiMemoryRef.current;
                         const latestTargetable = latestPlayers.map((p, i) => ({
@@ -1091,7 +1125,7 @@
                             <div className="w-full flex flex-col gap-1.5">
                                 <button
                                     onClick={enterMatchMode}
-                                    disabled={gameState === 'setup' || gameState === 'ended' || gameState === 'match-mode' || (!activeCard && discardPile.length === 0)}
+                                    disabled={gameState === 'setup' || gameState === 'ended' || gameState === 'match-mode' || gameState === 'gift-card' || (!activeCard && discardPile.length === 0)}
                                     className={`w-full text-white font-black py-1.5 md:py-2 rounded-lg text-xs md:text-sm laptop-btn-large ${
                                         matchWindowActive 
                                             ? 'bg-yellow-500 text-slate-900 animate-pulse ring-2 ring-yellow-300' 
@@ -1101,7 +1135,6 @@
                                     {matchWindowActive ? `${matchCountdown}s` : "Match!"}
                                 </button>
 
-                                {/* Fixed cancel match condition: show when timer is active OR when in match-mode selection */}
                                 {(matchWindowActive || gameState === 'match-mode') && (
                                     <button 
                                         onClick={cancelMatchWindow}
@@ -1152,7 +1185,7 @@
                             )}
 
                             {players[0] && (
-                                <div className={`flex flex-col items-center justify-center bg-emerald-800/45 p-1.5 md:p-3 rounded-2xl border w-[29vw] md:w-56 transition-all duration-300 tight-padding lg:w-72 lg:p-4 ${currentPlayer === 0 ? 'border-yellow-400 ring-2 ring-yellow-400' : 'border-emerald-700'}`}>
+                                <div className={`flex flex-col items-center justify-center bg-emerald-800/45 p-1.5 md:p-3 rounded-2xl border w-[29vw] md:w-56 transition-all duration-300 tight-padding lg:w-72 lg:p-4 ${currentPlayer === 0 || gameState === 'gift-card' ? 'border-yellow-400 ring-2 ring-yellow-400' : 'border-emerald-700'}`}>
                                     <div className="flex items-center gap-1.5 mb-1.5">
                                         <h2 className="text-[10px] md:text-sm font-bold text-green-300 laptop-text-large">You</h2>
                                     </div>
@@ -1164,12 +1197,12 @@
                                                     key={card.id || idx} 
                                                     onClick={() => handleCardClick(0, idx)}
                                                     className={`card-fluid rounded-lg flex items-center justify-center font-bold cursor-pointer border card-transition transform active:scale-95 shadow-md ${
-                                                        card.visible || (activeCard && gameState === 'playing')
+                                                        card.visible || (activeCard && gameState === 'playing') || gameState === 'gift-card'
                                                             ? 'bg-white text-black border-yellow-400' 
                                                             : 'bg-red-800 border-white text-white'
                                                     } ${getAnimationClass(0, idx)}`}
                                                 >
-                                                    {card.visible ? `${card.value}${card.suit}` : (activeCard ? "Swap" : "?")}
+                                                    {card.visible ? `${card.value}${card.suit}` : (gameState === 'gift-card' ? "GIFT" : (activeCard ? "Swap" : "?"))}
                                                 </div>
                                             );
                                         })}
@@ -1197,10 +1230,10 @@
                     {/* BOTTOM TOOLBAR */}
                     <div className="w-full flex flex-col sm:flex-row justify-between items-center bg-emerald-950 p-3 sm:p-4 rounded-2xl gap-3 text-xs md:text-base mb-1 border border-emerald-800 lg:p-6">
                         <div className="flex gap-3 w-full sm:w-auto justify-center lg:gap-6">
-                            <button onClick={() => setGameState('menu')} className="bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg text-xs md:text-sm transition-colors border border-emerald-700 shadow laptop-btn-large">
+                            <button onClick={() => setGameState('menu')} className="bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg text-xs md:text-sm transition-colors border border-slate-700 shadow laptop-btn-large">
                                 Menu
                             </button>
-                            <button onClick={() => setShowRules(true)} className="bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg text-xs md:text-sm transition-colors border border-emerald-700 shadow laptop-btn-large">
+                            <button onClick={() => setShowRules(true)} className="bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 px-5 rounded-lg text-xs md:text-sm transition-colors border border-slate-700 shadow laptop-btn-large">
                                 Rules
                             </button>
                             <button onClick={handleStartClick} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-extrabold py-2 px-5 rounded-lg text-xs md:text-sm transition-colors shadow laptop-btn-large">
