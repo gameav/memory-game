@@ -174,24 +174,104 @@
                 window.memoryGameTest = {
                     getState: () => ({ deck, discardPile, gameState, activeCard, message, currentPlayer, players, showCalledBy, matchWindowActive, playerCount }),
                     forceState: (state) => {
-                        if (state.deck) setDeck(state.deck);
-                        if (state.discardPile) setDiscardPile(state.discardPile);
+                        if (state.deck) {
+                            setDeck(state.deck);
+                            deckRef.current = state.deck;
+                        }
+                        if (state.discardPile) {
+                            setDiscardPile(state.discardPile);
+                            discardPileRef.current = state.discardPile;
+                        }
                         if (state.gameState) setGameState(state.gameState);
                         if (state.activeCard !== undefined) setActiveCard(state.activeCard);
                         if (state.message !== undefined) setMessage(state.message);
                         if (state.currentPlayer !== undefined) setCurrentPlayer(state.currentPlayer);
-                        if (state.players) setPlayers(state.players);
+                        if (state.players) {
+                            setPlayers(state.players);
+                            playersRef.current = state.players;
+                        }
                         if (state.playerCount !== undefined) setPlayerCount(state.playerCount);
-                        if (state.showCalledBy !== undefined) setShowCalledBy(state.showCalledBy);
-                        if (state.matchWindowActive !== undefined) setMatchWindowActive(state.matchWindowActive);
+                        if (state.showCalledBy !== undefined) {
+                            setShowCalledBy(state.showCalledBy);
+                            showCalledByRef.current = state.showCalledBy;
+                        }
+                        if (state.matchWindowActive !== undefined) {
+                            setMatchWindowActive(state.matchWindowActive);
+                        }
                     },
+                    clearTimers,
                     drawFromDeck,
                     drawFromDiscard,
                     discardActive,
                     restoreDeckFromDiscard: (currentDeck, currentDiscard) => restoreDeckFromDiscard(currentDeck, currentDiscard),
                     handleCardClick,
+                    executeAITurn,
                 };
                 return () => { delete window.memoryGameTest; };
+            }, [deck, discardPile, gameState, activeCard, message, currentPlayer, players, showCalledBy, matchWindowActive]);
+
+            useEffect(() => {
+                const runAsync = async () => {
+                    if (!window.memoryGameTest) return;
+                    window.memoryGameTest.runBotPowerCardTests = async () => {
+                        const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+                        const expected = {
+                            '8': { regex: /peeked|Match Window open/i, requireMatchWindow: true },
+                            '10': { regex: /spied on a card|Match Window open/i, requireMatchWindow: true },
+                            'J': { regex: /Jack/i, requireMatchWindow: false },
+                            'Q': { regex: /Swapped!|Match Window open/i, requireMatchWindow: true },
+                            'K': { regex: /Swapped!|Match Window open/i, requireMatchWindow: true }
+                        };
+                        const cardFor = (value) => ({ value, suit: '♦', isRed: true, id: `power-${value}` });
+                        const topDiscard = { value: '5', suit: '♣', isRed: false, id: 'discard-top' };
+                        const playerHands = [
+                            { name: 'You', cards: [cardFor('2'), cardFor('3'), cardFor('4'), cardFor('5')] },
+                            { name: 'Bot', cards: [cardFor('6'), cardFor('7'), cardFor('8'), cardFor('9')] }
+                        ];
+                        const clonePlayerHands = () => playerHands.map(p => ({ name: p.name, cards: p.cards.map(c => ({ ...c })) }));
+                        const results = [];
+                        for (const power of Object.keys(expected)) {
+                            window.memoryGameTest.clearTimers?.();
+                            window.memoryGameTest.forceState({
+                                deck: [cardFor('2'), cardFor(power)],
+                                discardPile: [topDiscard],
+                                gameState: 'playing',
+                                activeCard: null,
+                                message: `Testing ${power}`,
+                                players: clonePlayerHands(),
+                                playerCount: 2,
+                                currentPlayer: 1,
+                                showCalledBy: null,
+                                matchWindowActive: false
+                            });
+                            await wait(50);
+                            executeAITurn(1);
+                            const outcome = { power, passed: false, details: [], finalState: null };
+                            const deadline = Date.now() + 6000;
+                            while (Date.now() < deadline) {
+                                const state = window.memoryGameTest.getState();
+                                outcome.details.push({ message: state.message, gameState: state.gameState, matchWindowActive: state.matchWindowActive });
+                                if (expected[power].regex.test(state.message)) {
+                                    if (!expected[power].requireMatchWindow || state.matchWindowActive) {
+                                        outcome.passed = true;
+                                        outcome.finalState = state;
+                                        break;
+                                    }
+                                }
+                                await wait(150);
+                            }
+                            if (!outcome.passed) {
+                                outcome.finalState = window.memoryGameTest.getState();
+                            }
+                            results.push(outcome);
+                        }
+                        return results;
+                    };
+                };
+                runAsync();
+                return () => {
+                    if (window.memoryGameTest) delete window.memoryGameTest.runBotPowerCardTests;
+                };
             }, [deck, discardPile, gameState, activeCard, message, currentPlayer, players, showCalledBy, matchWindowActive]);
 
             useEffect(() => {
@@ -752,71 +832,96 @@
                 currentDeck = restoreDeckFromDiscard(currentDeck, discardPileRef.current);
                 if (currentDeck.length === 0) return;
                 const drawn = currentDeck.pop();
+                if (!drawn) return;
                 setDeck(currentDeck);
 
-                const currentPlayers = playersRef.current;
-                const currentAiMemory = aiMemoryRef.current;
+                const currentPlayers = playersRef.current || [];
+                const currentAiMemory = aiMemoryRef.current || {};
 
-                const targetablePlayers = currentPlayers.map((p, i) => ({
-                    playerIdx: i,
-                    validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
-                })).filter(tp => tp.validIndices.length > 0);
+                const targetablePlayers = currentPlayers.map((p, i) => {
+                    if (!p || !Array.isArray(p.cards)) return null;
+                    return {
+                        playerIdx: i,
+                        validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
+                    };
+                }).filter(tp => tp && tp.validIndices.length > 0);
 
                 const ownValid = targetablePlayers.find(tp => tp.playerIdx === botIdx)?.validIndices || [];
+                const botName = currentPlayers[botIdx]?.name || 'Bot';
 
                 if (['8', '10', 'J', 'Q', 'K'].includes(drawn.value)) {
                     setDiscardPile(prev => [...prev, drawn]);
-                    setMessage(`${currentPlayers[botIdx].name} played power card ${drawn.value}!`);
+                    setMessage(`${botName} played power card ${drawn.value}!`);
                     
                     aiTimerRef.current = setTimeout(() => {
-                        // Retrieve absolute latest states to prevent stale timeouts
-                        const latestPlayers = playersRef.current;
-                        const latestAiMemory = aiMemoryRef.current;
-                        const latestTargetable = latestPlayers.map((p, i) => ({
-                            playerIdx: i,
-                            validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
-                        })).filter(tp => tp.validIndices.length > 0);
+                        const latestPlayers = playersRef.current || [];
+                        const latestAiMemory = aiMemoryRef.current || {};
+                        const latestTargetable = latestPlayers.map((p, i) => {
+                            if (!p || !Array.isArray(p.cards)) return null;
+                            return {
+                                playerIdx: i,
+                                validIndices: p.cards.map((c, idx) => c !== null ? idx : null).filter(v => v !== null)
+                            };
+                        }).filter(tp => tp && tp.validIndices.length > 0);
                         const latestOwnValid = latestTargetable.find(tp => tp.playerIdx === botIdx)?.validIndices || [];
 
                         if (drawn.value === '8') {
-                            const unknownIndices = latestOwnValid.filter(idx => !latestAiMemory[`${botIdx}-${idx}`]);
-                            const peekTarget = unknownIndices.length > 0 ? unknownIndices[0] : latestOwnValid[0];
-                            
-                            const targetCard = latestPlayers[botIdx].cards[peekTarget];
-                            updateAiMemory(botIdx, peekTarget, targetCard);
-
-                            setMessage(`${latestPlayers[botIdx].name} peeked.`);
+                            if (latestOwnValid.length > 0) {
+                                const unknownIndices = latestOwnValid.filter(idx => !latestAiMemory[`${botIdx}-${idx}`]);
+                                const peekTarget = unknownIndices.length > 0 ? unknownIndices[0] : latestOwnValid[0];
+                                const targetCard = latestPlayers[botIdx]?.cards?.[peekTarget];
+                                if (targetCard) updateAiMemory(botIdx, peekTarget, targetCard);
+                            }
+                            setMessage(`${botName} peeked.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === '10') {
                             const opponents = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
-                            const chosenOpp = opponents[Math.floor(Math.random() * opponents.length)];
-                            const chosenCardIdx = chosenOpp.validIndices[Math.floor(Math.random() * chosenOpp.validIndices.length)];
-                            
-                            const targetCard = latestPlayers[chosenOpp.playerIdx].cards[chosenCardIdx];
-                            updateAiMemory(chosenOpp.playerIdx, chosenCardIdx, targetCard);
-
-                            setMessage(`${latestPlayers[botIdx].name} spied on a card.`);
+                            if (opponents.length > 0) {
+                                const chosenOpp = opponents[Math.floor(Math.random() * opponents.length)];
+                                if (chosenOpp && chosenOpp.validIndices.length > 0) {
+                                    const chosenCardIdx = chosenOpp.validIndices[Math.floor(Math.random() * chosenOpp.validIndices.length)];
+                                    const targetCard = latestPlayers[chosenOpp.playerIdx]?.cards?.[chosenCardIdx];
+                                    if (targetCard) updateAiMemory(chosenOpp.playerIdx, chosenCardIdx, targetCard);
+                                }
+                            }
+                            setMessage(`${botName} spied on a card.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         } else if (drawn.value === 'J') {
-                            setMessage(`${latestPlayers[botIdx].name} gets another turn from the Jack!`);
+                            setMessage(`${botName} gets another turn from the Jack!`);
                             aiTimerRef.current = setTimeout(() => { 
                                 executeAITurn(botIdx, true); 
                             }, 1800);
                         } else if (drawn.value === 'Q' || drawn.value === 'K') {
-                            const otherPlayers = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
-                            if (otherPlayers.length > 0 && latestOwnValid.length > 0) {
-                                const targetTP = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
-                                performSwap(
-                                    botIdx, latestOwnValid[Math.floor(Math.random() * latestOwnValid.length)], 
-                                    targetTP.playerIdx, targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)]
-                                );
-                            } else {
-                                triggerMatchWindow(() => completeAITurn(botIdx, false));
+                            try {
+                                const otherPlayers = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
+                                if (otherPlayers.length > 0 && latestOwnValid.length > 0) {
+                                    const targetTP = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
+                                    const ownIdx = latestOwnValid[Math.floor(Math.random() * latestOwnValid.length)];
+                                    const targetIdx = targetTP && targetTP.validIndices.length > 0
+                                        ? targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)]
+                                        : null;
+                                    const targetPlayer = targetTP && Number.isInteger(targetTP.playerIdx)
+                                        ? latestPlayers[targetTP.playerIdx]
+                                        : null;
+                                    const ownCard = Array.isArray(latestPlayers[botIdx]?.cards)
+                                        ? latestPlayers[botIdx].cards[ownIdx]
+                                        : null;
+                                    const targetCard = Array.isArray(targetPlayer?.cards)
+                                        ? targetPlayer.cards[targetIdx]
+                                        : null;
+                                    if (targetTP && targetIdx !== null && ownCard && targetCard) {
+                                        performSwap(botIdx, ownIdx, targetTP.playerIdx, targetIdx);
+                                        return;
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('AI Q/K error', error);
                             }
+                            triggerMatchWindow(() => completeAITurn(botIdx, false));
                         }
                     }, 1500);
                 } else {
-                    if (ownValid.length > 0) {
+                    if (ownValid.length > 0 && currentPlayers[botIdx] && Array.isArray(currentPlayers[botIdx].cards)) {
                         const botCards = [...currentPlayers[botIdx].cards];
                         let swapIdx = ownValid[Math.floor(Math.random() * ownValid.length)];
                         for (let idx of ownValid) {
@@ -837,10 +942,12 @@
                             updateAiMemory(botIdx, swapIdx, drawn);
 
                             const nextPlayers = [...playersRef.current];
-                            nextPlayers[botIdx].cards = botCards;
+                            if (nextPlayers[botIdx] && Array.isArray(nextPlayers[botIdx].cards)) {
+                                nextPlayers[botIdx].cards = botCards;
+                            }
                             setPlayers(nextPlayers);
                             setAnimatingIndices([]);
-                            setMessage(`${playersRef.current[botIdx].name} swapped.`);
+                            setMessage(`${currentPlayers[botIdx]?.name || 'Bot'} swapped.`);
                             triggerMatchWindow(() => completeAITurn(botIdx, false));
                         }, 350);
                     } else {
