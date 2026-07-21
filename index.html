@@ -265,6 +265,13 @@
                             }
                             results.push(outcome);
                         }
+
+                        const summary = results.map(r => `${r.power}: ${r.passed ? 'PASS' : 'FAIL'}`).join(' | ');
+                        console.groupCollapsed('runBotPowerCardTests summary');
+                        console.log(summary);
+                        results.forEach(r => console.log(`${r.power}: ${r.passed ? 'PASS' : 'FAIL'} - ${r.finalState?.message || 'no final state'}`));
+                        console.groupEnd();
+
                         return results;
                     };
                 };
@@ -347,9 +354,18 @@
             };
 
             const clearTimers = () => {
-                if (aiTimerRef.current) clearTimeout(aiTimerRef.current);
-                if (botMatchTimerRef.current) clearTimeout(botMatchTimerRef.current);
-                if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+                if (aiTimerRef.current) {
+                    clearTimeout(aiTimerRef.current);
+                    aiTimerRef.current = null;
+                }
+                if (botMatchTimerRef.current) {
+                    clearTimeout(botMatchTimerRef.current);
+                    botMatchTimerRef.current = null;
+                }
+                if (countdownIntervalRef.current) {
+                    clearInterval(countdownIntervalRef.current);
+                    countdownIntervalRef.current = null;
+                }
             };
 
             const handleSetupPeek = (index) => {
@@ -619,10 +635,12 @@
             const cancelMatchWindow = () => {
                 clearTimers();
                 setMatchWindowActive(false);
+                setMatchCountdown(0);
                 restorePreMatchOrProceed();
             };
 
             const triggerMatchWindow = (callbackOnComplete) => {
+                clearTimers();
                 const topDiscard = activeCard ? activeCard : (discardPile[discardPile.length - 1] || activeCard);
                 let botWillMatch = false;
 
@@ -733,7 +751,25 @@
 
                 setTimeout(() => {
                     const updatedPlayers = JSON.parse(JSON.stringify(players));
-                    const temp = updatedPlayers[p1].cards[c1];
+                    if (!updatedPlayers[p1] || !updatedPlayers[p2]) {
+                        setAnimatingIndices([]);
+                        triggerMatchWindow(() => {
+                            prepareNextTurn();
+                        });
+                        return;
+                    }
+
+                    const cardA = updatedPlayers[p1].cards?.[c1];
+                    const cardB = updatedPlayers[p2].cards?.[c2];
+                    if (!cardA || !cardB) {
+                        setAnimatingIndices([]);
+                        triggerMatchWindow(() => {
+                            prepareNextTurn();
+                        });
+                        return;
+                    }
+
+                    const temp = cardA;
                     updatedPlayers[p1].cards[c1] = updatedPlayers[p2].cards[c2];
                     updatedPlayers[p2].cards[c2] = temp;
                     
@@ -895,23 +931,26 @@
                             try {
                                 const otherPlayers = latestTargetable.filter(tp => tp.playerIdx !== botIdx);
                                 if (otherPlayers.length > 0 && latestOwnValid.length > 0) {
-                                    const targetTP = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
-                                    const ownIdx = latestOwnValid[Math.floor(Math.random() * latestOwnValid.length)];
-                                    const targetIdx = targetTP && targetTP.validIndices.length > 0
-                                        ? targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)]
-                                        : null;
-                                    const targetPlayer = targetTP && Number.isInteger(targetTP.playerIdx)
-                                        ? latestPlayers[targetTP.playerIdx]
-                                        : null;
-                                    const ownCard = Array.isArray(latestPlayers[botIdx]?.cards)
-                                        ? latestPlayers[botIdx].cards[ownIdx]
-                                        : null;
-                                    const targetCard = Array.isArray(targetPlayer?.cards)
-                                        ? targetPlayer.cards[targetIdx]
-                                        : null;
-                                    if (targetTP && targetIdx !== null && ownCard && targetCard) {
-                                        performSwap(botIdx, ownIdx, targetTP.playerIdx, targetIdx);
-                                        return;
+                                    const validTargets = otherPlayers.filter(tp => {
+                                        const player = latestPlayers[tp.playerIdx];
+                                        return Array.isArray(player?.cards) && tp.validIndices.length > 0;
+                                    });
+
+                                    if (validTargets.length > 0) {
+                                        const targetTP = validTargets[Math.floor(Math.random() * validTargets.length)];
+                                        const ownIdx = latestOwnValid[Math.floor(Math.random() * latestOwnValid.length)];
+                                        const targetIdx = targetTP.validIndices[Math.floor(Math.random() * targetTP.validIndices.length)];
+                                        const ownPlayer = latestPlayers[botIdx];
+                                        const ownCards = Array.isArray(ownPlayer?.cards) ? ownPlayer.cards : [];
+                                        const targetPlayer = latestPlayers[targetTP.playerIdx];
+                                        const targetCards = Array.isArray(targetPlayer?.cards) ? targetPlayer.cards : [];
+                                        const ownCard = Number.isInteger(ownIdx) ? ownCards[ownIdx] : null;
+                                        const targetCard = Number.isInteger(targetIdx) ? targetCards[targetIdx] : null;
+
+                                        if (ownCard && targetCard) {
+                                            performSwap(botIdx, ownIdx, targetTP.playerIdx, targetIdx);
+                                            return;
+                                        }
                                     }
                                 }
                             } catch (error) {
